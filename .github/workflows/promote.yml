@@ -1,0 +1,51 @@
+name: Promote stocked media
+# Media of posts scheduled more than 8 days ahead wait on the `stock` branch (stock/<YYYY-MM-DD>/<file>).
+# Every morning, before the Buffer workflow of one-fact-wiser (09:17 UTC), files due within 9 days move to
+# videos/ on main under the same name, so the URLs already written in the Buffer queue start answering.
+on:
+  schedule:
+    - cron: "40 8 * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+  pages: write
+concurrency:
+  group: promote
+  cancel-in-progress: false
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - name: Move media due within 9 days to main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name ofw-bot
+          git config user.email ofw-bot@users.noreply.github.com
+          git fetch -q --depth=1 origin stock:refs/remotes/origin/stock || { echo "no stock branch"; exit 0; }
+          limit=$(date -u -d "+9 days" +%Y-%m-%d)
+          mkdir -p videos
+          dirs=()
+          for d in $(git ls-tree -d --name-only origin/stock stock/ | sed 's#^stock/##'); do
+            if [[ ! "$d" > "$limit" ]]; then
+              dirs+=("$d")
+              for f in $(git ls-tree --name-only origin/stock "stock/$d/"); do
+                git show "origin/stock:$f" > "videos/$(basename "$f")"
+                echo "promoted $f"
+              done
+            fi
+          done
+          if [ ${#dirs[@]} -eq 0 ]; then echo "nothing due before $limit"; exit 0; fi
+          git add videos
+          git commit -qm "Promote stocked media due by $limit" || true
+          for i in 1 2 3; do git push -q origin HEAD:main && break || { git pull -q --rebase origin main; }; done
+          git checkout -q -B stock origin/stock
+          for d in "${dirs[@]}"; do git rm -rq "stock/$d"; done
+          git commit -qm "Remove promoted media (due by $limit)"
+          for i in 1 2 3; do git push -q origin stock && break || { git pull -q --rebase origin stock; }; done
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/pages/builds" >/dev/null 2>&1 && echo "pages build requested" || echo "pages build request not available (a normal push build will run)"
