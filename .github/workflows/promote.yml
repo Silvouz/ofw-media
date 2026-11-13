@@ -2,6 +2,8 @@ name: Promote stocked media
 # Media of posts scheduled more than 8 days ahead wait on the `stock` branch (stock/<YYYY-MM-DD>/<file>).
 # Every morning, before the Buffer workflow of one-fact-wiser (09:17 UTC), files due within 9 days move to
 # videos/ on main under the same name, so the URLs already written in the Buffer queue start answering.
+# Then the prune job removes from main the media that have been on the site for more than 14 days (their
+# posts went out at least 4 days earlier), so the published site stays well under the 1 GB Pages limit.
 on:
   schedule:
     - cron: "40 8 * * *"
@@ -49,3 +51,24 @@ jobs:
           git commit -qm "Remove promoted media (due by $limit)"
           for i in 1 2 3; do git push -q origin stock && break || { git pull -q --rebase origin stock; }; done
           gh api -X POST "repos/${GITHUB_REPOSITORY}/pages/builds" >/dev/null 2>&1 && echo "pages build requested" || echo "pages build request not available (a normal push build will run)"
+  prune:
+    needs: promote
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout: |
+            index.html
+            .github
+          sparse-checkout-cone-mode: false
+      - name: Remove media of posts that went out
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name ofw-bot
+          git config user.email ofw-bot@users.noreply.github.com
+          bash .github/prune_sent.sh
